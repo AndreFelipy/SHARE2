@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>GMS — Compartilhar Tela</title>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+:root{--bg:#0b0d13;--bg2:#11141c;--card:#161a24;--border:#242938;--text:#eef0f5;--muted:#8b93a7;--accent:#5b7cfa;--accent2:#7c5bfa;--danger:#ef4a5f}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--bg:#f5f6fa;--bg2:#fff;--card:#fff;--border:#e3e6ee;--text:#181c27;--muted:#666f84;--accent:#4a6cf0;--accent2:#7c5bfa;--danger:#e0364c}}
+:root[data-theme="dark"]{--bg:#0b0d13;--bg2:#11141c;--card:#161a24;--border:#242938;--text:#eef0f5;--muted:#8b93a7;--accent:#5b7cfa;--accent2:#7c5bfa;--danger:#ef4a5f}
+*{box-sizing:border-box}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+#app{max-width:1000px;margin:0 auto;padding:24px 20px 40px}
+header{display:flex;align-items:center;justify-content:space-between;margin-bottom:28px;flex-wrap:wrap;gap:10px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:20px}
+.brand .dot{width:10px;height:10px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2))}
+.card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:28px}
+.lobby{max-width:420px;margin:60px auto 0}
+.lobby h1{font-size:22px;margin:0 0 6px}
+.lobby p{color:var(--muted);margin:0 0 24px;font-size:14px;line-height:1.5}
+label{display:block;font-size:13px;color:var(--muted);margin:14px 0 6px}
+input{width:100%;padding:11px 14px;border-radius:10px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:15px}
+input:focus{outline:2px solid var(--accent);outline-offset:1px}
+.row{display:flex;gap:8px}
+.row input{flex:1;min-width:0}
+button{cursor:pointer;border:none;border-radius:10px;padding:11px 16px;font-size:14px;font-weight:600;font-family:inherit}
+.btn-primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;width:100%;margin-top:20px;padding:13px}
+.btn-primary:disabled{opacity:.5;cursor:not-allowed}
+.btn-ghost{background:var(--bg2);color:var(--text);border:1px solid var(--border)}
+.btn-danger{background:var(--danger);color:#fff}
+.room-bar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:18px}
+.code-chip{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:8px 10px 8px 14px;font-family:ui-monospace,monospace;font-size:14px}
+.status{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px}
+.status .led{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.status.on .led{background:#33cc7a}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.tile{position:relative;background:#000;border-radius:14px;overflow:hidden;aspect-ratio:16/9;border:1px solid var(--border);cursor:pointer}
+.tile:hover{outline:2px solid var(--accent)}
+.tile .hint{position:absolute;right:10px;top:8px;background:rgba(0,0,0,.55);color:#fff;font-size:11px;padding:3px 8px;border-radius:20px;opacity:0;transition:opacity .15s}
+.tile:hover .hint{opacity:1}
+.tile video{width:100%;height:100%;object-fit:contain;background:#000}
+.tile .label{position:absolute;left:10px;bottom:8px;background:rgba(0,0,0,.55);color:#fff;font-size:12px;padding:3px 9px;border-radius:20px}
+.controls{display:flex;gap:10px;margin-top:20px;flex-wrap:wrap}
+.people{color:var(--muted);font-size:13px}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const app = document.getElementById('app');
+const PFX = 'gms-';
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+];
+const PEER_OPTS = { config: { iceServers: ICE_SERVERS } };
+const S = {peer:null, myId:null, myName:'', code:'', isHost:false, guestConns:new Map(), hostConn:null, roster:[], outgoingCalls:new Map(), localStream:null};
+
+function sanitize(c){ return PFX + c.toLowerCase().replace(/[^a-z0-9]/g,''); }
+function genCode(){ return Math.random().toString(36).slice(2,6).toUpperCase()+'-'+Math.random().toString(36).slice(2,6).toUpperCase(); }
+
+function renderLobby(){
+  const prefillCode = new URLSearchParams(location.search).get('code') || '';
+  app.innerHTML = `<header><div class="brand"><span class="dot"></span>GMS</div></header>
+  <div class="card lobby">
+    <h1>Compartilhar tela</h1>
+    <p>Digite um código: se ele ainda não existir, você cria a sala; se já existir, você entra nela.</p>
+    <label>Seu nome</label><input id="nameInput" placeholder="Como te chamam?" maxlength="24">
+    <label>Código da sala</label>
+    <div class="row"><input id="codeInput" placeholder="Ex: AB12-CD34" value="${prefillCode}" maxlength="20"><button class="btn-ghost" id="genBtn">Gerar</button></div>
+    <button class="btn-primary" id="joinBtn">Entrar na sala</button>
+    <div class="people" id="err" style="margin-top:10px"></div>
+  </div>`;
+  document.getElementById('genBtn').onclick = ()=>{ document.getElementById('codeInput').value = genCode(); };
+  document.getElementById('joinBtn').onclick = start;
+}
+
+function start(){
+  const name = document.getElementById('nameInput').value.trim() || 'Convidado';
+  let code = document.getElementById('codeInput').value.trim().toUpperCase();
+  if(!code) code = genCode();
+  S.myName = name; S.code = code;
+  const btn = document.getElementById('joinBtn'); btn.disabled = true; btn.textContent = 'Conectando…';
+  attemptHost(sanitize(code));
+}
+
+function attemptHost(roomId){
+  const p = new Peer(roomId, PEER_OPTS);
+  p.on('open', id=>{ S.peer=p; S.myId=id; S.isHost=true; renderRoom(); setRoster([{id,name:S.myName}]); });
+  p.on('connection', conn=>registerGuest(conn));
+  p.on('call', call=>handleIncomingCall(call));
+  p.on('error', err=>{
+    if(err.type==='unavailable-id'){ p.destroy(); joinAsGuest(roomId); }
+    else { showErr('Erro de conexão: '+err.type); resetBtn(); }
+  });
+}
+
+function joinAsGuest(hostId){
+  const p = new Peer(PEER_OPTS);
+  p.on('open', id=>{
+    S.peer=p; S.myId=id; S.isHost=false;
+    const conn = p.connect(hostId, {metadata:{name:S.myName}});
+    S.hostConn = conn;
+    conn.on('open', ()=>{ conn.send({type:'hello', name:S.myName}); renderRoom(); });
+    conn.on('data', d=>handleHostData(d));
+    conn.on('close', ()=>{ showStatus(false); });
+    conn.on('error', ()=>{ showErr('Não foi possível entrar nessa sala.'); resetBtn(); });
+  });
+  p.on('call', call=>handleIncomingCall(call));
+  p.on('error', err=>{ showErr('Erro de conexão: '+err.type); resetBtn(); });
+}
+
+function registerGuest(conn){
+  conn.on('data', data=>{
+    if(data.type==='hello'){
+      S.guestConns.set(conn.peer, {conn, name:data.name});
+      broadcastRoster();
+      if(S.localStream) callPeer(conn.peer);
+    }
+  });
+  conn.on('close', ()=>{ S.guestConns.delete(conn.peer); closeCallTo(conn.peer); removeTile(conn.peer); broadcastRoster(); });
+}
+function broadcastRoster(){
+  const roster = [{id:S.myId,name:S.myName}, ...[...S.guestConns.entries()].map(([id,v])=>({id,name:v.name}))];
+  S.guestConns.forEach(v=>v.conn.send({type:'roster', roster}));
+  setRoster(roster);
+}
+function handleHostData(data){
+  if(data.type==='roster') setRoster(data.roster);
+}
+function setRoster(roster){
+  const prevIds = new Set(S.roster.map(p=>p.id));
+  const newIds = new Set(roster.map(p=>p.id));
+  roster.forEach(p=>{ if(p.id!==S.myId && !prevIds.has(p.id) && S.localStream) callPeer(p.id); });
+  S.roster.forEach(p=>{ if(p.id!==S.myId && !newIds.has(p.id)){ closeCallTo(p.id); removeTile(p.id); } });
+  S.roster = roster;
+  updateStatus();
+}
+
+function callPeer(id){
+  if(S.outgoingCalls.has(id)) return;
+  const call = S.peer.call(id, S.localStream, {metadata:{name:S.myName}});
+  S.outgoingCalls.set(id, call);
+  capBitrate(call);
+}
+function capBitrate(call){
+  const apply=()=>{
+    const pc = call.peerConnection; if(!pc) return false;
+    pc.getSenders().forEach(s=>{
+      if(s.track && s.track.kind==='video'){
+        const p = s.getParameters();
+        if(!p.encodings || !p.encodings.length) p.encodings=[{}];
+        p.encodings[0].maxBitrate = 2500000;
+        s.setParameters(p).catch(()=>{});
+      }
+    });
+    return true;
+  };
+  if(!apply()) setTimeout(apply, 300);
+}
+function closeCallTo(id){ const c=S.outgoingCalls.get(id); if(c) c.close(); S.outgoingCalls.delete(id); }
+function handleIncomingCall(call){
+  call.answer();
+  call.on('stream', stream=>{ ensureTile(call.peer, (call.metadata&&call.metadata.name)||'Convidado').querySelector('video').srcObject = stream; });
+  call.on('close', ()=>removeTile(call.peer));
+}
+
+function renderRoom(){
+  app.innerHTML = `<header><div class="brand"><span class="dot"></span>GMS</div>
+    <div class="status on" id="statusEl"><span class="led"></span><span>conectado</span></div></header>
+  <div class="room-bar">
+    <div class="code-chip">🔑 ${S.code}<button class="btn-ghost" id="copyBtn" style="padding:4px 10px">Copiar link</button></div>
+    <div class="people" id="peopleEl"></div>
+  </div>
+  <div class="grid" id="grid"></div>
+  <div class="controls">
+    <button class="btn-primary" id="shareBtn" style="width:auto">Compartilhar tela</button>
+    <button class="btn-danger hidden" id="stopBtn">Parar compartilhamento</button>
+  </div>`;
+  document.getElementById('copyBtn').onclick = ()=>{
+    const url = new URL(location.href); url.searchParams.set('code', S.code);
+    navigator.clipboard.writeText(url.toString()).catch(()=>{});
+    const b = document.getElementById('copyBtn'); b.textContent='Copiado!'; setTimeout(()=>{b.textContent='Copiar link';},1500);
+  };
+  document.getElementById('shareBtn').onclick = startShare;
+  document.getElementById('stopBtn').onclick = stopShare;
+  ensureTile('local', S.myName+' (você)');
+}
+function showErr(msg){ const e=document.getElementById('err'); if(e) e.textContent = msg; }
+function resetBtn(){ const b=document.getElementById('joinBtn'); if(b){ b.disabled=false; b.textContent='Entrar na sala'; } }
+function showStatus(on){ const el=document.getElementById('statusEl'); if(!el) return; el.classList.toggle('on',on); el.querySelector('span:last-child').textContent = on?'conectado':'sala encerrada'; }
+function updateStatus(){
+  const el = document.getElementById('peopleEl'); if(!el) return;
+  const n = S.roster.filter(p=>p.id!==S.myId).length;
+  el.textContent = n===0 ? 'Só você por aqui — compartilhe o código' : (n===1?'1 pessoa com você':n+' pessoas com você');
+}
+
+function ensureTile(id,label){
+  let t = document.getElementById('tile-'+id);
+  if(t) return t;
+  t = document.createElement('div'); t.className='tile'; t.id='tile-'+id;
+  t.innerHTML = `<video autoplay playsinline ${id==='local'?'muted':''}></video><div class="label">${label}</div><div class="hint">🔍 clique pra ampliar</div>`;
+  t.onclick = ()=>{
+    const v = t.querySelector('video');
+    if(document.fullscreenElement){ document.exitFullscreen().catch(()=>{}); }
+    else if(v.requestFullscreen){ v.requestFullscreen().catch(()=>{}); }
+    else if(v.webkitEnterFullscreen){ v.webkitEnterFullscreen(); }
+  };
+  document.getElementById('grid').appendChild(t);
+  return t;
+}
+function removeTile(id){ const t=document.getElementById('tile-'+id); if(t) t.remove(); }
+
+async function startShare(){
+  let stream;
+  try{ stream = await navigator.mediaDevices.getDisplayMedia({video:{frameRate:{ideal:24,max:30}, width:{ideal:1280,max:1280}, height:{ideal:720,max:720}}, audio:true}); }catch(e){ return; }
+  S.localStream = stream;
+  ensureTile('local', S.myName+' (você)').querySelector('video').srcObject = stream;
+  S.roster.forEach(p=>{ if(p.id!==S.myId) callPeer(p.id); });
+  document.getElementById('shareBtn').classList.add('hidden');
+  document.getElementById('stopBtn').classList.remove('hidden');
+  stream.getVideoTracks()[0].onended = stopShare;
+}
+function stopShare(){
+  if(!S.localStream) return;
+  S.localStream.getTracks().forEach(t=>t.stop());
+  S.outgoingCalls.forEach(c=>c.close());
+  S.outgoingCalls.clear();
+  const t = document.getElementById('tile-local'); if(t) t.querySelector('video').srcObject=null;
+  S.localStream = null;
+  document.getElementById('shareBtn').classList.remove('hidden');
+  document.getElementById('stopBtn').classList.add('hidden');
+}
+
+renderLobby();
+</script>
+</body>
+</html>
